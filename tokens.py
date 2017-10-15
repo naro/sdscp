@@ -85,8 +85,7 @@ class CompositeToken(Token):
 
 
 	def __init__(self, value):
-
-		self.value = value.strip()
+		super().__init__(value)
 		self.tokens = None  # None = not yet tokenized
 
 
@@ -555,11 +554,11 @@ class T_Expression(CompositeToken):
 				t = T_Number(s)
 				self.tokens.append(t)
 
-			elif (len(self.tokens) > 0 and
-				type(self.tokens[-1:][0]) is T_Operator
+			elif (((len(self.tokens) > 0 and
+				type(self.tokens[-1:][0]) is T_Operator) or len(self.tokens) == 0)
 				and rd.matches(r'[-+]\s*[0-9a-z_]+')):
 
-				# Number literal
+				# Unary operator
 				sign = rd.consume()
 				if sign == '+':
 					sign = ''
@@ -567,8 +566,7 @@ class T_Expression(CompositeToken):
 				rd.sweep()
 
 				if sign == '-':
-					self.tokens.append(T_Number('-1'))
-					self.tokens.append(T_Operator('*'))
+					self.tokens.append(T_Operator('@-'))
 
 			elif rd.has_operator():
 				# Operator
@@ -1359,7 +1357,7 @@ class Tokenizer:
 		"""
 
 		if self.tokens is None:
-			raise Esception('Not parsed yet.')
+			raise Exception('Not parsed yet.')
 
 		show_tokenlist(self.tokens)
 

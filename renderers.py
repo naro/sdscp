@@ -105,6 +105,7 @@ class Renderer:
 					'version': self.pragmas.get('version', '?'),
 					'time': strftime('%Y-%m-%d, %H:%M:%S', localtime()),
 					'renderer': self._get_name(),
+					'sdscp_version': self.pragmas.get('sdscp_version', '?'),
 				}
 
 				banner_text	= banner_text.strip('\n')
@@ -380,7 +381,7 @@ class CSyntaxRenderer(Renderer):
 				s.cond = E_Literal( T_Number( str( round(val) ) ) )
 
 			except (ValueError, TypeError, SyntaxError, KeyError):
-			 	pass
+				pass
 
 		# Optimization for dead branch
 		if type(s.cond) is E_Literal:
@@ -606,7 +607,6 @@ class CSyntaxRenderer(Renderer):
 
 
 	def _render_subexpr(self, e):  # Expression nested in another
-
 		if isinstance(e, E_Literal):
 			return self._render_expr_literal(e)
 
@@ -630,6 +630,13 @@ class CSyntaxRenderer(Renderer):
 
 
 	def _render_expr_operator(self, e):  # E_Operator
+		#special treatment for unary
+		if e.value == '@+':
+			return '+'
+
+		if e.value == '@-':
+			return '-'
+
 		return e.value
 
 
@@ -715,6 +722,26 @@ class BaseSdsRenderer(CSyntaxRenderer):
 		return super()._render_expr_literal(e)
 
 
+	# Raise error if trying to assign string to variable
+	def _render_assign(self, s):  # S_Assign
+		if self._find_string_literal(s.value):
+			raise CompatibilityError(
+				'SDS-C does not support string variables, at %s' % super()._render_assign(s))
+
+		return super()._render_assign(s)
+
+
+	def _find_string_literal(self, e):
+		if isinstance(e, E_Literal):
+			return e.is_string()
+
+		if isinstance(e, E_Group):
+			for ee in e.children:
+				if self._find_string_literal(ee):
+					return True
+
+		return False
+
 	def _render_function(self, s):  # S_Function
 
 		if len(s.args) > 0:
@@ -768,7 +795,7 @@ class BaseSdsRenderer(CSyntaxRenderer):
 		if e.value in ['++', '--']:
 			raise CompatibilityError('Can\'t use ++ and -- SDS-C expressions!')
 
-		return e.value
+		return super()._render_expr_operator(e)
 
 
 
@@ -797,7 +824,7 @@ class SimpleSdsRenderer(BaseSdsRenderer):
 	def _prepare(self, code):
 
 		for mut in self.mutators:
-			code = mut.transform(code);
+			code = mut.transform(code)
 
 		return code
 
@@ -835,6 +862,6 @@ class AsmSdsRenderer(BaseSdsRenderer):
 	def _prepare(self, code):
 
 		for mut in self.mutators:
-			code = mut.transform(code);
+			code = mut.transform(code)
 
 		return code

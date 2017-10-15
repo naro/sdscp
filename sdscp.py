@@ -13,10 +13,12 @@ from sdscp_errors import *
 import statements
 import getpass
 
+VERSION = '1.5.0'
+
 # ==================== Command Line Arguments processing =======================
 
 parser = argparse.ArgumentParser(
-	description='SDS-C macro preprocessor',
+	description='SDS-C macro preprocessor v%s' % VERSION,
 	formatter_class=argparse.RawDescriptionHelpFormatter,
 	epilog="""
 +-------------------------------------------------------+
@@ -26,7 +28,7 @@ parser = argparse.ArgumentParser(
 | Complete documentation in Czech can be viewed here:   |
 |   https://goo.gl/mZ1oOg  (Google Docs)                |
 |                                                       |
-| SDSCP (c) Ondřej Hruška, 2014-2015                    |
+| SDSCP (c) Ondřej Hruška, 2014-2017                    |
 +-------------------------------------------------------+
 """
 	)
@@ -37,14 +39,23 @@ parser.add_argument(
 )
 
 parser.add_argument(
+		'-V', '--version',
+		help='Show the SDSCP version.',
+		action='version',
+		version=VERSION
+)
+
+parser.add_argument(
 		'-o', '--output',
-		help='The output file. To just print the output, use -d',
+		help='The output file; %%v in the name will be replaced with the \
+		      program\'s version. To just print the output, use -d instead.',
 		action='store',
 )
 
 parser.add_argument(
 		'-p', '--pragma',
-		help='Set a pragma value (syntax like #pragma)',
+		help='Set a pragma value (syntax like #pragma). All pragmas are \
+		      also accessible to the program as defines named __NAME__',
 		action='append',
 		nargs='+',
 		default=[]
@@ -170,7 +181,7 @@ try:
 	print('Reading file:', SRC)
 
 	# read the file
-	dproc = DirectiveProcessor(SRC)
+	dproc = DirectiveProcessor(SRC, pragmas_args)
 
 	if SHOW_ORIGINAL:
 		banner('SOURCE', '-')
@@ -187,9 +198,8 @@ try:
 
 	pragmas = dproc.get_pragmas()
 
-	pragmas.update(pragmas_args)
-
 	pragmas['main_file'] = SRC
+	pragmas['sdscp_version'] = VERSION
 
 	if 'name' not in pragmas.keys():
 		pragmas['name'] = SRC
@@ -270,7 +280,7 @@ try:
 
 		# perform tweaks to match some of SDS-C's broken syntax
 
-		rtype = pragmas.get('renderer', 'sds2')
+		rtype = pragmas.get('renderer', 'asm')
 
 		if rtype in ['sds', 'simple']:
 			rtype = 'simple'
@@ -293,6 +303,8 @@ try:
 			print(prep4disp(for_sds) + '\n')
 
 		if DEST != None:
+			if 'version' in pragmas:
+				DEST = DEST.replace("%V", pragmas.get('version'))
 			print('Writing to file: %s' % DEST)
 			f = open(DEST, 'w')
 			f.write(for_sds)

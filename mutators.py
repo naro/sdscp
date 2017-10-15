@@ -1,4 +1,5 @@
 #!/bin/env python3
+from operator import attrgetter
 
 import statements
 from tokens import Tokenizer
@@ -216,7 +217,6 @@ class M_RemoveDeadCode(Mutator):
 
 						if self.do_rm_labels and ss.name not in self.used_labels:
 							self.removed = True
-							# print('INFO: Removing unused label %s' % ss.name)
 							continue
 
 						if ss.name == s.name:
@@ -484,7 +484,7 @@ class FnRegistry:
 		self.callindex2fnname[i] = self.get_name(called)
 		self.callindex2origin[i] = from_
 
-		self.counter += 1;
+		self.counter += 1
 
 		return i
 
@@ -531,10 +531,10 @@ class FnRegistry:
 		if type(index) == str:
 
 			if index == 'main':
-				return '__main_loop_end';
+				return '__main_loop_end'
 
 			if index == 'init':
-				return '__init_end';
+				return '__init_end'
 
 			index = self.fnname2fnindex[index]
 
@@ -596,6 +596,8 @@ class FnRegistry:
 
 		return self.fnindex2fnname[addr]
 
+	def get_transformed_name(self, name):
+		return self.get_begin(self.fnname2fnindex[name])
 
 
 class M_Grande(Mutator):
@@ -773,7 +775,6 @@ class M_Grande(Mutator):
 		_calls.add('init')
 		self.functions_called = _calls
 
-
 		# Add used tmps to globals declare
 		for name in self.tmp_pool.get_names():
 			self._add_global_var(name)
@@ -785,7 +786,7 @@ class M_Grande(Mutator):
 		# Compose output code
 		output_code = []
 		append(output_code, S_Comment('Globals declaration'))
-		append(output_code, self.globals_declare)
+		append(output_code, sorted(self.globals_declare, key=attrgetter('var.name')))
 
 		# main func body statements
 		sts = []
@@ -823,7 +824,8 @@ class M_Grande(Mutator):
 
 
 		# other user functions (already processed)
-		for name in _resolved_calls:
+		# sorted by function label
+		for name in sorted(_resolved_calls, key=self.fn_pool.get_transformed_name):
 			func = pr_userfuncs[name]
 			append(sts, func.code)
 			append(sts, self._build_trampoline_for_func(func.name))
@@ -1142,7 +1144,7 @@ class M_Grande(Mutator):
 		append(tmps, _tmps)
 
 		if not isinstance(s.var, E_Variable):
-			raise SdscpSyntaxError('Cannot assign to %s (type %s)' % (args[0], type(args[0])))
+			raise SdscpSyntaxError('Cannot assign to %s (type %s)' % (s.var, type(s.var)))
 
 		(_init, _tmps, var) = self._process_expr(fn, s.var)
 		append(out, _init)
@@ -1187,6 +1189,11 @@ class M_Grande(Mutator):
 		append(out, _init)
 		append(tmps, _tmps)
 
+		# This really shouldn't be in mutator, but in renderer
+		# it can't provide good debugging info
+		if type(rval) is E_Literal and rval.is_string():
+			raise CompatibilityError('Can\'t return a string literal, at: %s' % str(rval))
+
 		append(out, self._mk_assign('__rval', rval))
 		append(out, self._mk_goto(self.fn_pool.get_end(fn.name)))
 
@@ -1201,14 +1208,24 @@ class M_Grande(Mutator):
 		append(out, _init)
 		append(tmps, _tmps)
 
-		ss = S_If()
-		ss.cond = cond
-		ss.then_st = S_Block()
-		ss.then_st.children = self._process_block(fn, s.then_st)
-		ss.else_st = S_Block()
-		ss.else_st.children = self._process_block(fn, s.else_st)
-
-		append(out, ss)
+		if type(s.cond) is E_Literal:
+			if int(str(s.cond)) == 0:
+				# always False
+				append(out, S_Comment('(IF always false: else only)'))
+				append(out, self._process_block(fn, s.else_st))
+			else:
+				# always True
+				st = s.then_st
+				append(out, S_Comment('(IF always true: then only)'))
+				append(out, self._process_block(fn, s.then_st))
+		else:
+			ss = S_If()
+			ss.cond = cond
+			ss.then_st = S_Block()
+			ss.then_st.children = self._process_block(fn, s.then_st)
+			ss.else_st = S_Block()
+			ss.else_st.children = self._process_block(fn, s.else_st)
+			append(out, ss)
 
 		return (out, tmps)
 
@@ -1489,6 +1506,11 @@ class M_Grande(Mutator):
 		tmps = []
 		expr = e
 
+		# group by operators to allow partial simplifications
+		# this also works around a SDS-C bug with bad priorities
+		if type(expr) is E_Group:
+			expr.children = self._group_expr_operators(expr.children)
+
 		# try to evaluate it
 		if not hasattr(self, '_erndr'):
 			self._erndr = renderers.CSyntaxRenderer([])
@@ -1496,11 +1518,12 @@ class M_Grande(Mutator):
 		if type(e) is E_Group:
 			try:
 				as_str = self._erndr._render_expr(e)
+				# print('Trying to simplify: %s' % as_str)
 				val = eval_expr(as_str)
 
 				e = E_Literal(T_Number(str(round(val))))
 
-				print('Expression "%s" simplified to "%s"' % (as_str, val))
+				#print('Expression "%s" simplified to "%s"' % (as_str, val))
 
 			except (ValueError, TypeError, SyntaxError, KeyError):
 				pass
@@ -1596,78 +1619,94 @@ class M_Grande(Mutator):
 		else:
 			print('WARN: Unhandled expression %s (type %s)' % (e, type(e)))
 
-		if type(expr) is E_Group:
-			# group parts by operator precedence (SDS-C bug! awww)
-			expr.children = self._group_expr_operators(expr.children)
-
 		return (init, tmps, expr)
 
 	def _group_expr_operators(self, exprs):
 
 		# print(str(E_Group(exprs)))
 
+		order = [
+			[1, '@+', '@-'],
+			[1, '!', '~'],
+			[2, '*', '/', '%'],
+			[2, '+', '-'],
+			[2, '>>', '<<'],
+			[2, '<', '<='],
+			[2, '>', '>='],
+			[2, '==', '!='],
+			[2, '&'],
+			[2, '^'],
+			[2, '|'],
+			[2, '&&'],
+			[2, '||']
+		]
 		# 1. group highest level, then lower etc.
-		order = ['!', '~', '*', '/', '%', '+', '-', '>>', '<<', '<', '<=', '>', '>=', '==', '!=', '&', '^', '|', '&&', '||']
 
 		for o in order:
+			arity = o[0]
+			ops = o[1:]
 			# print('Collecting operator %s' % o)
-
-			if o in ['!', '~']:
-				arity = 1
-			else:
-				arity = 2
 
 			while True:
 				out = []
-				last2 = None
-				last1 = None
+				prev2 = None
+				prev = None
 				collecting = False
 				times = 0
 				for e in exprs:
-					if type(e) is E_Operator and e.value == o:
+					if type(e) is E_Operator and e.value in ops:
 						# print('Collecting for %s' % e)
 
-						if last2 is not None:
-							append(out, last2)
+						if prev2 is not None:
+							append(out, prev2)
 
 						if arity == 2:
-							if last1 is None:
-								last1 = e
-								continue
+							if prev is None:
+								# This might be operator chaining
+								if len(out) > 0:
+									prev = out[-1]
+									out=out[:-1]
+								else:
+									prev = e
+									continue
+								#continue
 
-							last2 = last1
+							prev2 = prev
 						else:
-							if last1 is not None:
-								append(out, last1)
+							# Arity 1, attaches to the right
+							if prev is not None:
+								append(out, prev)
 
-						last1 = e
+						prev = e
 						collecting = True
 
 						# print("HIT")
 						continue
 
 					if collecting:
+						# Last was an operator, now we got the operand
 						times += 1
 						if arity == 2:
-							out.append(E_Group([last2, last1, e]))
+							out.append(E_Group([prev2, prev, e]))
 						else:
-							out.append(E_Group([last1, e]))
+							out.append(E_Group([prev, e]))
 
 						collecting = False
-						last2 = None
-						last1 = None
+						prev2 = None
+						prev = None
 					else:
-						if last2 is not None:
-							append(out, last2)
+						if prev2 is not None:
+							append(out, prev2)
 
-						last2 = last1
-						last1 = e
+						prev2 = prev
+						prev = e
 
-				if last2 is not None:
-						append(out, last2)
+				# Append left-overs
+				if prev2 is not None:
+						append(out, prev2)
 
-				if last1 is not None:
-						append(out, last1)
+				if prev is not None:
+						append(out, prev)
 
 				exprs = out
 
@@ -1676,6 +1715,8 @@ class M_Grande(Mutator):
 
 			# print(str(E_Group(exprs)))
 
+		if len(exprs) == 1 and type(exprs[0]) is E_Group:
+				exprs = exprs[0].children
 
 		return exprs # TODO
 
